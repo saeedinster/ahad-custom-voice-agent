@@ -61,38 +61,29 @@ app.post('/voice', async (req, res) => {
     const messages = [
       {
         role: "system",
-        content: `You are a friendly CPA receptionist for Ahad and Co CPA Firm. Follow this exact flow:
+        content: `You are a friendly receptionist for Ahad and Co CPA Firm.
 
-        - FIRST CALL ONLY: Greet warmly: "Thanks for calling Ahad and Co CPA Firm. How can I help you today?"
+STRICT COLLECTION ORDER - Ask ONE question at a time:
 
-        - Intent handling:
-          - Returning client: "Welcome back!" → ask for details → booking
-          - Appointment request: "Great! Let's schedule a free 15-minute consultation." → booking
-          - Personal/individual tax: "We'd love to help. Let's schedule a free 15-minute consultation." → booking
-          - Business tax/accounting: "We can definitely help. Let's schedule a free 15-minute consultation." → booking
-          - Specific person request: "They're unavailable right now. Would you like to book an appointment?" → booking
-          - Other: "I can book a free consultation for you. Would you like to schedule one?" → booking
+${!memory.first_name ? '→ NOW: Ask "May I have your first name?"' : '✓ First name: ' + memory.first_name}
+${memory.first_name && !memory.last_name ? '→ NOW: Ask "And your last name?"' : memory.last_name ? '✓ Last name: ' + memory.last_name : ''}
+${memory.last_name && !memory.email ? '→ NOW: Ask "What\'s your email address?"' : memory.email ? '✓ Email: ' + memory.email : ''}
+${memory.email && !memory.phone ? '→ NOW: Ask "And your phone number?"' : memory.phone ? '✓ Phone: ' + memory.phone : ''}
+${memory.phone && !memory.previous_client ? '→ NOW: Ask "Have you worked with Ahad and Co before?"' : memory.previous_client ? '✓ Previous client: ' + memory.previous_client : ''}
+${memory.previous_client === 'No' && !memory.referral_source ? '→ NOW: Ask "How did you hear about us?"' : memory.referral_source ? '✓ Referral: ' + memory.referral_source : ''}
+${(memory.previous_client === 'Yes' || memory.referral_source) && !memory.call_reason ? '→ NOW: Ask "What\'s the main reason for your call?"' : memory.call_reason ? '✓ Reason: ' + memory.call_reason : ''}
+${memory.first_name && memory.last_name && memory.email && memory.phone && memory.previous_client && memory.call_reason ? '→ NOW: Say "Perfect! You\'re all set. You\'ll receive confirmation shortly. Thank you for calling Ahad and Co. Goodbye!"' : ''}
 
-        - Booking flow (collect in this order):
-          1. First name: "May I have your first name? Please spell it out slowly."
-          2. Last name: "And your last name? Please spell it slowly."
-          3. Email: "What's your email address? Please spell it very slowly, one letter at a time."
-          4. Phone: "And your phone number?"
-          5. Previous client: "Have you worked with Ahad and Co before?" (Yes/No)
-          6. Referral: "How did you hear about us?" (Skip if previous client = Yes)
-          7. Call reason: "What's the main reason for your call today?"
+CRITICAL RULES:
+- If first call (history is empty): Start with "Thanks for calling Ahad and Co CPA Firm." then ask first question
+- Ask ONLY the next question marked with →
+- Keep responses under 10 words
+- NO confirmations like "Just to confirm" or "Is that correct?"
+- NO repeating user input back to them
+- If user tries to give multiple fields at once, just take the answer to YOUR current question
+- NEVER say "Goodbye" more than once
 
-        - After collecting all info: "Perfect! I'm booking you for [date/time]. You'll receive a confirmation shortly. Is there anything else I can help you with?"
-        - End ONCE with: "Thank you for calling Ahad and Co. Goodbye!" then STOP.
-
-        CRITICAL RULES:
-        - Extract information from user speech and update memory
-        - NEVER repeat questions already answered
-        - NEVER say "Goodbye" more than once
-        - Keep responses SHORT (1-2 sentences max)
-        - Speak naturally, don't sound robotic
-
-        Current memory state: ${JSON.stringify(memory, null, 2)}`
+Current conversation: ${memory.history.length} exchanges`
       }
     ];
 
@@ -123,50 +114,76 @@ app.post('/voice', async (req, res) => {
     }
     memory.history.push({ role: "assistant", content: agentText });
 
-    // Extract information from user speech
-    if (userSpeech) {
+    // STATE MACHINE: Extract information based ONLY on current step
+    if (userSpeech && userSpeech.trim()) {
       const lowerSpeech = userSpeech.toLowerCase();
 
-      // Extract name if asking for first name
-      if (memory.step === 'collect_first_name' || (agentText.toLowerCase().includes('first name') && !memory.first_name)) {
-        memory.first_name = userSpeech.trim();
+      // Determine current step based on what's missing
+      if (!memory.first_name) {
+        memory.step = 'collect_first_name';
+      } else if (!memory.last_name) {
         memory.step = 'collect_last_name';
-      }
-
-      // Extract last name
-      if (memory.step === 'collect_last_name' || (agentText.toLowerCase().includes('last name') && !memory.last_name)) {
-        memory.last_name = userSpeech.trim();
+      } else if (!memory.email) {
         memory.step = 'collect_email';
-      }
-
-      // Extract email
-      if (memory.step === 'collect_email' || (agentText.toLowerCase().includes('email') && !memory.email)) {
-        memory.email = userSpeech.replace(/\s/g, '').toLowerCase();
+      } else if (!memory.phone) {
         memory.step = 'collect_phone';
-      }
-
-      // Extract phone
-      if (memory.step === 'collect_phone' || (agentText.toLowerCase().includes('phone') && !memory.phone)) {
-        memory.phone = userSpeech.replace(/\D/g, '');
+      } else if (!memory.previous_client) {
         memory.step = 'collect_previous_client';
+      } else if (memory.previous_client === 'No' && !memory.referral_source) {
+        memory.step = 'collect_referral';
+      } else if (!memory.call_reason) {
+        memory.step = 'collect_call_reason';
+      } else {
+        memory.step = 'complete';
       }
 
-      // Previous client
-      if (lowerSpeech.includes('yes') || lowerSpeech.includes('yeah') || lowerSpeech.includes('returning')) {
-        memory.previous_client = 'Yes';
-        memory.skip_referral_question = true;
-      } else if (lowerSpeech.includes('no') || lowerSpeech.includes('nope') || lowerSpeech.includes('new')) {
-        memory.previous_client = 'No';
-      }
+      // Extract based ONLY on current step
+      switch (memory.step) {
+        case 'collect_first_name':
+          memory.first_name = userSpeech.trim();
+          console.log(`[${callSid}] Captured first_name: ${memory.first_name}`);
+          break;
 
-      // Referral source
-      if (!memory.skip_referral_question && agentText.toLowerCase().includes('hear about')) {
-        memory.referral_source = userSpeech.trim();
-      }
+        case 'collect_last_name':
+          memory.last_name = userSpeech.trim();
+          console.log(`[${callSid}] Captured last_name: ${memory.last_name}`);
+          break;
 
-      // Call reason
-      if (agentText.toLowerCase().includes('reason') || agentText.toLowerCase().includes('help you with')) {
-        memory.call_reason = userSpeech.trim();
+        case 'collect_email':
+          // Clean up email - remove spaces, keep @ and dots
+          memory.email = userSpeech.replace(/\s+/g, '').toLowerCase();
+          console.log(`[${callSid}] Captured email: ${memory.email}`);
+          break;
+
+        case 'collect_phone':
+          // Extract only digits
+          memory.phone = userSpeech.replace(/\D/g, '');
+          console.log(`[${callSid}] Captured phone: ${memory.phone}`);
+          break;
+
+        case 'collect_previous_client':
+          // Simple yes/no detection
+          if (lowerSpeech.includes('yes') || lowerSpeech.includes('yeah')) {
+            memory.previous_client = 'Yes';
+            memory.skip_referral_question = true;
+          } else if (lowerSpeech.includes('no') || lowerSpeech.includes('nope')) {
+            memory.previous_client = 'No';
+          } else {
+            // Default to No if unclear
+            memory.previous_client = 'No';
+          }
+          console.log(`[${callSid}] Captured previous_client: ${memory.previous_client}`);
+          break;
+
+        case 'collect_referral':
+          memory.referral_source = userSpeech.trim();
+          console.log(`[${callSid}] Captured referral_source: ${memory.referral_source}`);
+          break;
+
+        case 'collect_call_reason':
+          memory.call_reason = userSpeech.trim();
+          console.log(`[${callSid}] Captured call_reason: ${memory.call_reason}`);
+          break;
       }
     }
 
