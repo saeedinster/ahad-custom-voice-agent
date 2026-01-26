@@ -225,9 +225,9 @@ function buildSystemPrompt(memory) {
 
     intent_clarification: `${baseContext}\nThe caller's intent is unclear. Ask politely:\n"I'd be happy to help. Are you looking to schedule an appointment, leave a message, or speak with someone?"`,
 
-    office_hours_message: `${baseContext}\nSay: "No one is available right now. Our office hours are Monday through Friday, 10:00 AM to 6:00 PM. You can call back during business hours, or I can take a message for you. Would you like to leave a message?"`,
+    office_hours_message: `${baseContext}\nSay: "No one is available right now. Our office hours are Tuesday through Friday, 11:00 AM to 6:00 PM. You can call back during business hours, or I can take a message for you. Would you like to leave a message?"`,
 
-    office_hours_declined: `${baseContext}\nSay: "No problem. Please call us back during business hours, Monday through Friday, 10 AM to 6 PM. Have a great day! Goodbye."`,
+    office_hours_declined: `${baseContext}\nSay: "No problem. Please call us back during business hours, Tuesday through Friday, 11 AM to 6 PM. Have a great day! Goodbye."`,
 
     calendar_check: `${baseContext}\nSay: "Let me check our calendar for available times. One moment please."`,
 
