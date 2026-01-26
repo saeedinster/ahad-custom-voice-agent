@@ -162,7 +162,7 @@ function detectIntentByKeywords(speech) {
   return 'unclear';
 }
 
-// Extract name from speech (improved)
+// Extract name from speech (improved - more lenient)
 function extractName(speech) {
   let name = speech.trim();
 
@@ -178,9 +178,15 @@ function extractName(speech) {
   // Clean up extra spaces
   name = name.replace(/\s+/g, ' ').trim();
 
-  // If it's still a full sentence or question, return empty (invalid)
-  if (name.split(' ').length > 3 || /\?/.test(name)) {
+  // Only reject if it's clearly invalid (very long or has question mark)
+  if (name.split(' ').length > 5 || /\?/.test(name)) {
     console.log(`Invalid name detected: "${name}" - too long or contains question mark`);
+    return '';
+  }
+
+  // If name is too short (less than 2 characters), reject
+  if (name.length < 2) {
+    console.log(`Invalid name detected: "${name}" - too short`);
     return '';
   }
 
@@ -236,7 +242,7 @@ function buildSystemPrompt(memory) {
         return `${baseContext}\nSay: "I'm sorry, I don't see any availability right now. Let me take your message instead."`;
       }
       const slotsText = memory.offered_slots.map((s, i) => `${i + 1}. ${s.displayText}`).join(', ');
-      return `${baseContext}\nPresent the available appointment times naturally.\nAvailable times: ${slotsText}\nSay something like: "I have a few times available: ${slotsText}. Which one works best for you?"`;
+      return `${baseContext}\nPresent the EARLIEST available appointment times naturally.\nAvailable times: ${slotsText}\nSay: "I have the following times available: ${slotsText}. Which one works best for you?"`;
     })(),
 
     ask_preferred_time: `${baseContext}\nAsk: "What day and time would work better for you?"`,
@@ -303,6 +309,12 @@ app.post('/voice', async (req, res) => {
 
       // Message-specific
       message_content: null,
+
+      // Retry counters for validation
+      first_name_retry: 0,
+      last_name_retry: 0,
+      email_retry: 0,
+      phone_retry: 0,
 
       // Flags
       booking_completed: false,
@@ -546,9 +558,18 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length > 0) {
           memory.first_name = extracted;
           memory.flow_state = 'appointment_last_name';
+          memory.first_name_retry = 0; // Reset counter
           console.log(`[${callSid}] Appointment first_name: ${memory.first_name}`);
         } else {
-          console.log(`[${callSid}] Invalid first name, staying in same state`);
+          memory.first_name_retry++;
+          console.log(`[${callSid}] Invalid first name, retry ${memory.first_name_retry}/2`);
+
+          // After 2 failed attempts, just accept whatever they said
+          if (memory.first_name_retry >= 2) {
+            memory.first_name = userSpeech.trim();
+            memory.flow_state = 'appointment_last_name';
+            console.log(`[${callSid}] Accepting name after retries: ${memory.first_name}`);
+          }
           // Stay in appointment_first_name state to ask again
         }
       }
@@ -558,9 +579,17 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length > 0) {
           memory.last_name = extracted;
           memory.flow_state = 'appointment_email';
+          memory.last_name_retry = 0;
           console.log(`[${callSid}] Appointment last_name: ${memory.last_name}`);
         } else {
-          console.log(`[${callSid}] Invalid last name, staying in same state`);
+          memory.last_name_retry++;
+          console.log(`[${callSid}] Invalid last name, retry ${memory.last_name_retry}/2`);
+
+          if (memory.last_name_retry >= 2) {
+            memory.last_name = userSpeech.trim();
+            memory.flow_state = 'appointment_email';
+            console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
+          }
         }
       }
 
@@ -569,9 +598,17 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length > 0) {
           memory.email = extracted;
           memory.flow_state = 'appointment_phone';
+          memory.email_retry = 0;
           console.log(`[${callSid}] Appointment email: ${memory.email}`);
         } else {
-          console.log(`[${callSid}] Invalid email, staying in same state`);
+          memory.email_retry++;
+          console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
+
+          if (memory.email_retry >= 2) {
+            memory.email = userSpeech.trim();
+            memory.flow_state = 'appointment_phone';
+            console.log(`[${callSid}] Accepting email after retries: ${memory.email}`);
+          }
         }
       }
 
@@ -580,9 +617,17 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length >= 10) {
           memory.phone = extracted;
           memory.flow_state = 'appointment_previous_client';
+          memory.phone_retry = 0;
           console.log(`[${callSid}] Appointment phone: ${memory.phone}`);
         } else {
-          console.log(`[${callSid}] Invalid phone (need at least 10 digits), staying in same state`);
+          memory.phone_retry++;
+          console.log(`[${callSid}] Invalid phone, retry ${memory.phone_retry}/2`);
+
+          if (memory.phone_retry >= 2) {
+            memory.phone = extracted || userSpeech.replace(/\D/g, '');
+            memory.flow_state = 'appointment_previous_client';
+            console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
+          }
         }
       }
 
@@ -615,10 +660,19 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length > 0) {
           memory.first_name = extracted;
           memory.flow_state = 'message_last_name';
+          memory.first_name_retry = 0;
           console.log(`[${callSid}] Message first_name: ${memory.first_name}`);
         } else {
-          console.log(`[${callSid}] Invalid first name, staying in same state`);
-          memory.flow_state = 'message_first_name'; // Explicitly stay in same state
+          memory.first_name_retry++;
+          console.log(`[${callSid}] Invalid first name, retry ${memory.first_name_retry}/2`);
+
+          if (memory.first_name_retry >= 2) {
+            memory.first_name = userSpeech.trim();
+            memory.flow_state = 'message_last_name';
+            console.log(`[${callSid}] Accepting name after retries: ${memory.first_name}`);
+          } else {
+            memory.flow_state = 'message_first_name'; // Explicitly stay in same state
+          }
         }
       }
 
@@ -627,9 +681,17 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length > 0) {
           memory.last_name = extracted;
           memory.flow_state = 'message_phone';
+          memory.last_name_retry = 0;
           console.log(`[${callSid}] Message last_name: ${memory.last_name}`);
         } else {
-          console.log(`[${callSid}] Invalid last name, staying in same state`);
+          memory.last_name_retry++;
+          console.log(`[${callSid}] Invalid last name, retry ${memory.last_name_retry}/2`);
+
+          if (memory.last_name_retry >= 2) {
+            memory.last_name = userSpeech.trim();
+            memory.flow_state = 'message_phone';
+            console.log(`[${callSid}] Accepting last name after retries: ${memory.last_name}`);
+          }
         }
       }
 
@@ -638,9 +700,17 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length >= 10) {
           memory.phone = extracted;
           memory.flow_state = 'message_email';
+          memory.phone_retry = 0;
           console.log(`[${callSid}] Message phone: ${memory.phone}`);
         } else {
-          console.log(`[${callSid}] Invalid phone (need at least 10 digits), staying in same state`);
+          memory.phone_retry++;
+          console.log(`[${callSid}] Invalid phone, retry ${memory.phone_retry}/2`);
+
+          if (memory.phone_retry >= 2) {
+            memory.phone = extracted || userSpeech.replace(/\D/g, '');
+            memory.flow_state = 'message_email';
+            console.log(`[${callSid}] Accepting phone after retries: ${memory.phone}`);
+          }
         }
       }
 
@@ -649,9 +719,17 @@ app.post('/voice', async (req, res) => {
         if (extracted && extracted.length > 0) {
           memory.email = extracted;
           memory.flow_state = 'message_content';
+          memory.email_retry = 0;
           console.log(`[${callSid}] Message email: ${memory.email}`);
         } else {
-          console.log(`[${callSid}] Invalid email, staying in same state`);
+          memory.email_retry++;
+          console.log(`[${callSid}] Invalid email, retry ${memory.email_retry}/2`);
+
+          if (memory.email_retry >= 2) {
+            memory.email = userSpeech.trim();
+            memory.flow_state = 'message_content';
+            console.log(`[${callSid}] Accepting email after retries: ${memory.email}`);
+          }
         }
       }
 
